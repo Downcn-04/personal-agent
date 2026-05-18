@@ -1,25 +1,14 @@
 import { useState } from 'react'
 import { Flex, Typography, Tag, Button } from 'antd'
 import {
-  CheckCircleFilled,
   SyncOutlined,
   ClockCircleFilled,
-  FileTextOutlined,
-  CodeOutlined,
-  BugOutlined,
-  RocketOutlined,
   DoubleRightOutlined,
   DoubleLeftOutlined,
 } from '@ant-design/icons'
+import STAGES from '../constants/stages'
 
 const { Text } = Typography
-
-const STAGES = [
-  { key: 'requirements', label: '需求明确', icon: <FileTextOutlined />, color: '#1677ff' },
-  { key: 'development', label: '代码开发', icon: <CodeOutlined />, color: '#fa8c16' },
-  { key: 'testing', label: '测试阶段', icon: <BugOutlined />, color: '#eb2f96' },
-  { key: 'deployment', label: '部署上线', icon: <RocketOutlined />, color: '#52c41a' },
-]
 
 export default function KanbanPanel({ stages }) {
   const [open, setOpen] = useState(true)
