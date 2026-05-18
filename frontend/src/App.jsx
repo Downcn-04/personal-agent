@@ -1,378 +1,272 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
-import {
-  ConfigProvider,
-  theme,
-  Layout,
-  Button,
-  Input,
-  Flex,
-  Typography,
-  Spin,
-  Alert,
-  Space,
-} from 'antd'
-import {
-  SendOutlined,
-  PlusOutlined,
-  DeleteOutlined,
-  RobotOutlined,
-  UserOutlined,
-  MessageOutlined,
-} from '@ant-design/icons'
+import { useReducer, useRef, useEffect, useCallback } from 'react'
+import { ConfigProvider, theme, Layout, Alert } from 'antd'
 
-import KanbanPanel from './KanbanPanel'
-import CodeReviewCard from './CodeReviewCard'
+import Sidebar from './components/Sidebar'
+import ChatMessages from './components/ChatMessages'
+import ChatInput from './components/ChatInput'
+import KanbanPanel from './components/KanbanPanel'
 
-const { Sider, Content, Footer, Header } = Layout
-const { TextArea } = Input
-const { Text } = Typography
+import { fetchThreads, fetchThread, createThread, deleteThread, streamChat } from './services/api'
+import sseParser from './utils/sseParser'
 
-const API_URL = 'http://localhost:8000'
+const { Content, Footer, Layout: AntLayout } = Layout
 
-function App() {
-  const [threads, setThreads] = useState([])
-  const [activeThreadId, setActiveThreadId] = useState(() => localStorage.getItem('active_thread') || '')
-  const [messages, setMessages] = useState([])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [kanbanStages, setKanbanStages] = useState({})
-  const chatRef = useRef(null)
-  const inputRef = useRef(null)
+const initialState = {
+  threads: [],
+  activeThreadId: localStorage.getItem('active_thread') || '',
+  messages: [],
+  input: '',
+  loading: false,
+  error: '',
+  kanbanStages: {},
+}
+
+function reducer(state, action) {
+  switch (action.type) {
+    case 'SET_THREADS':
+      return { ...state, threads: action.payload }
+
+    case 'SET_ACTIVE': {
+      const messages = action.payload?.messages || []
+      const id = action.payload?.id || ''
+      return { ...state, activeThreadId: id, messages, error: '' }
+    }
+
+    case 'SET_LOADING':
+      return { ...state, loading: action.payload }
+
+    case 'SET_ERROR':
+      return { ...state, error: action.payload, loading: false }
+
+    case 'SET_INPUT':
+      return { ...state, input: action.payload }
+
+    case 'ADD_USER_MESSAGE':
+      return { ...state, messages: [...state.messages, { role: 'user', content: action.payload }] }
+
+    case 'ADD_ASSISTANT_PLACEHOLDER':
+      return { ...state, messages: [...state.messages, { role: 'assistant', content: '' }] }
+
+    case 'APPEND_CONTENT': {
+      const msgs = [...state.messages]
+      const last = msgs[msgs.length - 1]
+      if (last) msgs[msgs.length - 1] = { ...last, content: last.content + action.payload }
+      return { ...state, messages: msgs }
+    }
+
+    case 'ADD_CODE_REVIEW':
+      return {
+        ...state,
+        messages: [...state.messages, {
+          role: 'dev',
+          type: 'code_review',
+          files: action.payload.files || [],
+          summary: action.payload.summary || '',
+        }],
+      }
+
+    case 'SET_STAGE_STATUS':
+      return {
+        ...state,
+        kanbanStages: {
+          ...state.kanbanStages,
+          [action.payload.stage]: {
+            ...state.kanbanStages[action.payload.stage],
+            status: action.payload.status,
+          },
+        },
+      }
+
+    case 'SET_STAGE_DATA':
+      return {
+        ...state,
+        kanbanStages: {
+          ...state.kanbanStages,
+          [action.payload.stage]: {
+            ...state.kanbanStages[action.payload.stage],
+            data: action.payload.data,
+          },
+        },
+      }
+
+    case 'RESET':
+      return {
+        ...state,
+        activeThreadId: '',
+        messages: [],
+        input: '',
+        loading: false,
+        error: '',
+        kanbanStages: {},
+      }
+
+    case 'REFRESH_THREADS':
+      return { ...state, threads: action.payload }
+
+    default:
+      return state
+  }
+}
+
+export default function App() {
+  const [state, dispatch] = useReducer(reducer, initialState)
   const abortRef = useRef(null)
 
   const loadThreads = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/threads`)
-      const data = await res.json()
-      setThreads(data)
+      const data = await fetchThreads()
+      dispatch({ type: 'SET_THREADS', payload: data })
     } catch {}
   }, [])
 
   const loadThread = useCallback(async (threadId) => {
     try {
-      const res = await fetch(`${API_URL}/threads/${threadId}`)
-      if (!res.ok) throw new Error('Not found')
-      const data = await res.json()
-      setMessages(data.messages || [])
-      setActiveThreadId(threadId)
+      const data = await fetchThread(threadId)
+      dispatch({ type: 'SET_ACTIVE', payload: { id: threadId, messages: data.messages || [] } })
       localStorage.setItem('active_thread', threadId)
-      setError('')
     } catch {
-      setError('Thread not found')
+      dispatch({ type: 'SET_ERROR', payload: 'Thread not found' })
     }
   }, [])
 
   useEffect(() => { loadThreads() }, [loadThreads])
 
   useEffect(() => {
-    if (activeThreadId) {
-      loadThread(activeThreadId)
-    }
-  }, [activeThreadId, loadThread])
+    if (state.activeThreadId) loadThread(state.activeThreadId)
+  }, [state.activeThreadId, loadThread])
 
-  useEffect(() => {
-    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' })
-  }, [messages])
-
-  const createThread = async () => {
+  const handleCreate = async () => {
     try {
-      const res = await fetch(`${API_URL}/threads`, { method: 'POST' })
-      const data = await res.json()
+      const data = await createThread()
       await loadThreads()
-      setActiveThreadId(data.id)
+      dispatch({ type: 'SET_ACTIVE', payload: { id: data.id, messages: [] } })
+      localStorage.setItem('active_thread', data.id)
     } catch {}
   }
 
-  const deleteThread = async (threadId) => {
+  const handleDelete = async (threadId) => {
     try {
-      await fetch(`${API_URL}/threads/${threadId}`, { method: 'DELETE' })
-      if (activeThreadId === threadId) {
-        setActiveThreadId('')
-        setMessages([])
+      await deleteThread(threadId)
+      if (state.activeThreadId === threadId) {
         localStorage.removeItem('active_thread')
+        dispatch({ type: 'RESET' })
       }
       await loadThreads()
     } catch {}
   }
 
-  const sendMessage = async () => {
-    const text = input.trim()
-    if (!text || loading || !activeThreadId) return
+  const handleSend = async () => {
+    const text = state.input.trim()
+    if (!text || state.loading || !state.activeThreadId) return
 
-    setError('')
-    setInput('')
-    setMessages(prev => [...prev, { role: 'user', content: text }])
-    setLoading(true)
+    dispatch({ type: 'SET_INPUT', payload: '' })
+    dispatch({ type: 'ADD_USER_MESSAGE', payload: text })
+    dispatch({ type: 'SET_LOADING', payload: true })
 
     const controller = new AbortController()
     abortRef.current = controller
 
     try {
-      const res = await fetch(`${API_URL}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: text, thread_id: activeThreadId }),
-        signal: controller.signal,
-      })
+      const reader = await streamChat(text, state.activeThreadId, controller.signal)
+      dispatch({ type: 'ADD_ASSISTANT_PLACEHOLDER' })
 
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.detail || `Error ${res.status}`)
-      }
-
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }])
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6)
-          if (data === '[DONE]') continue
-
-          try {
-            const parsed = JSON.parse(data)
-            if (parsed.type === 'error') { setError(parsed.data || parsed.error); return }
-            if (parsed.type === 'code_review') {
-              setMessages(prev => [...prev, {
-                role: 'dev',
-                type: 'code_review',
-                files: parsed.files || [],
-                summary: parsed.summary || '',
-              }])
-              continue
-            }
-            if (parsed.type === 'stage_change') {
-              setKanbanStages(prev => ({
-                ...prev,
-                [parsed.stage]: { ...prev[parsed.stage], status: parsed.status },
-              }))
-              continue
-            }
-            if (parsed.type === 'stage_data') {
-              setKanbanStages(prev => ({
-                ...prev,
-                [parsed.stage]: { ...prev[parsed.stage], data: parsed.data },
-              }))
-              continue
-            }
-            if (parsed.content) {
-              setMessages(prev => {
-                const msgs = [...prev]
-                const last = msgs[msgs.length - 1]
-                if (last) msgs[msgs.length - 1] = { ...last, content: last.content + parsed.content }
-                return msgs
-              })
-            }
-          } catch {}
+      for await (const parsed of sseParser(reader)) {
+        if (parsed.type === 'error') {
+          dispatch({ type: 'SET_ERROR', payload: parsed.data || parsed.error })
+          return
+        }
+        if (parsed.type === 'code_review') {
+          dispatch({ type: 'ADD_CODE_REVIEW', payload: parsed })
+          continue
+        }
+        if (parsed.type === 'stage_change') {
+          dispatch({ type: 'SET_STAGE_STATUS', payload: parsed })
+          continue
+        }
+        if (parsed.type === 'stage_data') {
+          dispatch({ type: 'SET_STAGE_DATA', payload: parsed })
+          continue
+        }
+        if (parsed.content) {
+          dispatch({ type: 'APPEND_CONTENT', payload: parsed.content })
         }
       }
 
       await loadThreads()
     } catch (err) {
-      if (err.name !== 'AbortError') setError(err.message)
+      if (err.name !== 'AbortError') {
+        dispatch({ type: 'SET_ERROR', payload: err.message })
+      }
     } finally {
-      setLoading(false)
+      dispatch({ type: 'SET_LOADING', payload: false })
       abortRef.current = null
     }
   }
 
   const handleApprove = () => {
-    setInput('通过，继续生成下一步代码')
+    dispatch({ type: 'SET_INPUT', payload: '通过，继续生成下一步代码' })
   }
 
   const handleRevise = () => {
-    setInput('')
-    inputRef.current?.focus()
-  }
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      sendMessage()
-    }
+    dispatch({ type: 'SET_INPUT', payload: '' })
   }
 
   return (
     <ConfigProvider theme={{ algorithm: theme.darkAlgorithm }}>
-      <KanbanPanel stages={kanbanStages} />
-      <Layout style={{ height: '100vh' }}>
-        <Sider
-          width={260}
-          style={{
-            background: '#141414',
-            borderRight: '1px solid #303030',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column',
-          }}
-        >
-          <Header style={{ background: 'transparent', padding: '12px 16px', height: 'auto' }}>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={createThread}
-              block
-            >
-              New Chat
-            </Button>
-          </Header>
-          <Flex vertical style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
-            {threads.map((t) => (
-              <Flex
-                key={t.id}
-                justify="space-between"
-                align="center"
-                onClick={() => setActiveThreadId(t.id)}
-                style={{
-                  padding: '10px 12px',
-                  borderRadius: 8,
-                  cursor: 'pointer',
-                  background: activeThreadId === t.id ? '#1f1f1f' : 'transparent',
-                  transition: 'background 0.15s',
-                }}
-              >
-                <Space align="start" size={6} style={{ flex: 1, overflow: 'hidden' }}>
-                  <MessageOutlined style={{ fontSize: 13, marginTop: 3, color: '#888' }} />
-                  <Text
-                    style={{ fontSize: 13, color: activeThreadId === t.id ? '#fff' : '#aaa' }}
-                    ellipsis
-                  >
-                    {t.title || 'New Conversation'}
-                  </Text>
-                </Space>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<DeleteOutlined />}
-                  onClick={(e) => { e.stopPropagation(); deleteThread(t.id) }}
-                  style={{ color: '#666' }}
-                />
-              </Flex>
-            ))}
-            {threads.length === 0 && (
-              <Flex justify="center" style={{ padding: 24, opacity: 0.4 }}>
-                <Text type="secondary">No conversations yet</Text>
-              </Flex>
-            )}
-          </Flex>
-        </Sider>
-
-        <Layout>
+      <KanbanPanel stages={state.kanbanStages} />
+      <AntLayout style={{ height: '100vh', flexDirection: 'row' }}>
+        <Sidebar
+          threads={state.threads}
+          activeId={state.activeThreadId}
+          onSelect={(id) => dispatch({ type: 'SET_ACTIVE', payload: { id } })}
+          onCreate={handleCreate}
+          onDelete={handleDelete}
+        />
+        <AntLayout>
           <Content style={{ flex: 1, overflowY: 'auto', padding: '8px 16px' }}>
-            <div ref={chatRef} style={{ maxWidth: 800, margin: '0 auto' }}>
-              {!activeThreadId && (
-                <Flex justify="center" align="center" style={{ paddingTop: 200, opacity: 0.4 }}>
-                  <Text type="secondary">Select or create a conversation to start chatting</Text>
-                </Flex>
-              )}
-              {activeThreadId && messages.length === 0 && !loading && (
-                <Flex justify="center" align="center" style={{ paddingTop: 100, opacity: 0.5 }}>
-                  <Text type="secondary">Send a message to start chatting</Text>
-                </Flex>
-              )}
-              <Flex vertical gap={12}>
-                {messages.map((msg, i) => {
-                  if (msg.type === 'code_review') {
-                    return (
-                      <Flex key={i} justify="flex-start">
-                        <Space align="start" size={8}>
-                          <RobotOutlined style={{ fontSize: 18, marginTop: 8 }} />
-                          <CodeReviewCard
-                            files={msg.files}
-                            summary={msg.summary}
-                            onApprove={handleApprove}
-                            onRevise={handleRevise}
-                          />
-                        </Space>
-                      </Flex>
-                    )
-                  }
-                  return (
-                    <Flex key={i} justify={msg.role === 'user' ? 'flex-end' : 'flex-start'}>
-                      <Space align="start" size={8}>
-                        {msg.role === 'assistant' && (
-                          <RobotOutlined style={{ fontSize: 18, marginTop: 8 }} />
-                        )}
-                        <div style={{
-                          maxWidth: 600,
-                          padding: '10px 16px',
-                          borderRadius: 12,
-                          background: msg.role === 'user' ? '#1677ff' : '#262626',
-                          borderBottomRightRadius: msg.role === 'user' ? 4 : 12,
-                          borderBottomLeftRadius: msg.role === 'assistant' ? 4 : 12,
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                        }}>
-                          <Text style={{ color: '#fff' }}>{msg.content}</Text>
-                        </div>
-                        {msg.role === 'user' && (
-                          <UserOutlined style={{ fontSize: 18, marginTop: 8 }} />
-                        )}
-                      </Space>
-                    </Flex>
-                  )
-                })}
-                {loading && (
-                  <Flex justify="flex-start">
-                    <Space align="center">
-                      <Spin size="small" />
-                      <Text type="secondary">Thinking...</Text>
-                    </Space>
-                  </Flex>
-                )}
-              </Flex>
-            </div>
+            {state.activeThreadId ? (
+              <ChatMessages
+                messages={state.messages}
+                loading={state.loading}
+                emptyText="Send a message to start chatting"
+                onApprove={handleApprove}
+                onRevise={handleRevise}
+              />
+            ) : (
+              <div ref={(el) => el} style={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                paddingTop: 200,
+                opacity: 0.4,
+              }}>
+                <span style={{ color: '#aaa' }}>Select or create a conversation to start chatting</span>
+              </div>
+            )}
           </Content>
 
-          {error && (
+          {state.error && (
             <Alert
-              message={error}
+              message={state.error}
               type="error"
               closable
-              onClose={() => setError('')}
+              onClose={() => dispatch({ type: 'SET_ERROR', payload: '' })}
               style={{ margin: '0 16px 8px' }}
             />
           )}
 
-          {activeThreadId && (
+          {state.activeThreadId && (
             <Footer style={{ background: 'transparent', padding: '12px 16px 16px' }}>
-              <Flex gap={8} style={{ maxWidth: 800, margin: '0 auto' }}>
-                <TextArea
-                  ref={inputRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Type your message... (Enter to send, Shift+Enter for new line)"
-                  autoSize={{ minRows: 1, maxRows: 4 }}
-                  style={{ flex: 1 }}
-                />
-                <Button
-                  type="primary"
-                  icon={<SendOutlined />}
-                  onClick={sendMessage}
-                  disabled={loading || !input.trim()}
-                  style={{ alignSelf: 'flex-end' }}
-                >
-                  Send
-                </Button>
-              </Flex>
+              <ChatInput
+                value={state.input}
+                onChange={(val) => dispatch({ type: 'SET_INPUT', payload: val })}
+                onSend={handleSend}
+                loading={state.loading}
+              />
             </Footer>
           )}
-        </Layout>
-      </Layout>
+        </AntLayout>
+      </AntLayout>
     </ConfigProvider>
   )
 }
-
-export default App
