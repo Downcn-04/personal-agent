@@ -1,8 +1,12 @@
 fastapi==0.115.6
-uvicorn==0.34.0
+uvicorn[standard]==0.34.0
 langgraph
 langchain
 langchain-openai
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+pydantic==2.10.6
+pydantic-settings==2.7.1
 python-dotenv==1.0.1
-sqlalchemy[asyncio]
-asyncpg
+# mypy==1.13.0
+# ruff==0.8.5

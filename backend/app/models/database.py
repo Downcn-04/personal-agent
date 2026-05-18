@@ -6,8 +6,8 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, ForeignKey, Integer, Text, TIMESTAMP, func, Index
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy import ForeignKey, Index, Integer, Text, TIMESTAMP, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
